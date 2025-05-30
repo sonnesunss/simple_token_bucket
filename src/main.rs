@@ -45,6 +45,25 @@ impl TokenBucket {
             false
         }
     }
+
+    // 当令牌不足等待的方法
+    pub fn consume_with_wait(&mut self, amount: u32) {
+        loop {
+            self.refill();
+
+            // 能消费就正常消费并退出
+            if self.tokens >= amount as f64 {
+                self.tokens -= amount as f64;
+                break;
+            }
+
+            // 不能消费就计算还需要多少令牌、需要等待多长的时间
+            let tokens_needed = amount as f64 - self.tokens;
+            let wait_time_secs = tokens_needed / self.refill_rate;
+            // 等待一段时间后重新检查, 最多等待0.1秒， 避免长时间阻塞
+            thread::sleep(Duration::from_secs_f64(wait_time_secs.min(0.1)));
+        }
+    }
 }
 
 fn main() {
@@ -57,12 +76,34 @@ fn main() {
             let mut b = bucket.lock().unwrap();
 
             if b.try_consume(1) {
-                println!("[{}] 请求成功", i);
+                println!("[{}] 请求成功，请求允许", i);
             } else {
-                println!("[{}] 请求被限流", i);
+                println!("[{}] 请求被限流, 丢弃请求", i);
             }
         });
     }
 
     thread::sleep(Duration::from_secs(5));
+
+    ////////////////////
+    println!("------------consume_wait-------------------");
+    let bucket = Arc::new(Mutex::new(TokenBucket::new(10, 2.0))); // 容量10，每秒补充2个令牌
+    let mut handles = vec![];
+
+    for i in 0..10 {
+        let bucket = Arc::clone(&bucket);
+        let handle = thread::spawn(move || {
+            let mut bucket = bucket.lock().unwrap();
+            println!("线程 {} 试图消费 5 个令牌 {:?}", i, Instant::now());
+            bucket.consume_with_wait(5);
+            println!("线程 {} 消费 5 个令牌 {:?}", i, Instant::now());
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("最终令牌桶内的状态是: {:?}", bucket.lock().unwrap());
 }

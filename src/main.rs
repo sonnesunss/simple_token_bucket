@@ -4,6 +4,12 @@ use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
 #[derive(Debug)]
+pub enum TokenBucketError {
+    Timeout,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
 pub struct TokenBucket {
     capacity: u32,                  // 桶的总容量
     tokens: f64,                    // 桶内现在的令牌数
@@ -47,19 +53,31 @@ impl TokenBucket {
     }
 
     // 当令牌不足等待的方法
-    pub fn consume_with_wait(&mut self, amount: u32) {
+    pub fn consume_with_wait(
+        &mut self,
+        amount: u32,
+        timeout: Duration,
+    ) -> Result<(), TokenBucketError> {
+        let start = Instant::now();
+
         loop {
             self.refill();
 
             // 能消费就正常消费并退出
             if self.tokens >= amount as f64 {
                 self.tokens -= amount as f64;
-                break;
+                return Ok(());
+            }
+
+            // 检查是否超时
+            if start.elapsed() >= timeout {
+                return Err(TokenBucketError::Timeout);
             }
 
             // 不能消费就计算还需要多少令牌、需要等待多长的时间
             let tokens_needed = amount as f64 - self.tokens;
             let wait_time_secs = tokens_needed / self.refill_rate;
+
             // 等待一段时间后重新检查, 最多等待0.1秒， 避免长时间阻塞
             thread::sleep(Duration::from_secs_f64(wait_time_secs.min(0.1)));
         }
@@ -95,8 +113,12 @@ fn main() {
         let handle = thread::spawn(move || {
             let mut bucket = bucket.lock().unwrap();
             println!("线程 {} 试图消费 5 个令牌 {:?}", i, Instant::now());
-            bucket.consume_with_wait(5);
-            println!("线程 {} 消费 5 个令牌 {:?}", i, Instant::now());
+            match bucket.consume_with_wait(5, Duration::from_secs(2)) {
+                Ok(()) => println!("线程 {} 消费 5 个令牌 {:?}", i, Instant::now()),
+                Err(TokenBucketError::Timeout) => {
+                    println!("线程 {} 等待超时, 丢弃 {:?}", i, Instant::now())
+                }
+            }
         });
         handles.push(handle);
     }
